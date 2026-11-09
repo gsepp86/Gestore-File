@@ -47,4 +47,4 @@ Su GitHub la compilazione parte da sola a ogni caricamento (scheda **Actions**).
 
 ## Licenza
 
-Questo progetto è distribuito sotto licenza MIT. Per maggiori dettagli, consulta il file [LICENSE](LICENSE).
+Questo progetto è distribuito sotto licenza MIT.
