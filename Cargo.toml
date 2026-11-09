@@ -1,6 +1,6 @@
 [package]
-name = "gestore-file"
-version = "0.2.0"
+name = "gestore-file-cp"
+version = "1.0.0"
 edition = "2021"
 description = "Gestore file veloce e moderno in Rust"
 build = "build.rs"

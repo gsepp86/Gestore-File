@@ -138,6 +138,18 @@ impl SortKey {
             SortKey::Kind => "Tipo",
         }
     }
+    fn id(self) -> &'static str {
+        match self {
+            SortKey::Saved => "salvataggio",
+            SortKey::Modified => "modifica",
+            SortKey::Name => "nome",
+            SortKey::Size => "dimensione",
+            SortKey::Kind => "tipo",
+        }
+    }
+    fn from_id(s: &str) -> Option<SortKey> {
+        SortKey::ALL.into_iter().find(|k| k.id() == s)
+    }
     fn default_ascending(self) -> bool {
         matches!(self, SortKey::Name | SortKey::Kind)
     }
@@ -312,6 +324,152 @@ fn icon_chip(ui: &mut egui::Ui, color: Color32, glyph: &str) {
     ui.painter().text(r.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(13.0), Color32::WHITE);
 }
 
+
+// ───────────────────────── Impostazioni ─────────────────────────
+
+const APP_NAME: &str = "Gestore File";
+const APP_VERSION: &str = "1.0";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartDir {
+    Download,
+    Desktop,
+    Documents,
+    Home,
+    Custom,
+}
+
+impl StartDir {
+    const ALL: [StartDir; 5] = [StartDir::Download, StartDir::Desktop, StartDir::Documents, StartDir::Home, StartDir::Custom];
+    fn label(self) -> &'static str {
+        match self {
+            StartDir::Download => "Download",
+            StartDir::Desktop => "Desktop",
+            StartDir::Documents => "Documenti",
+            StartDir::Home => "Cartella personale",
+            StartDir::Custom => "Un percorso a scelta…",
+        }
+    }
+    fn id(self) -> &'static str {
+        match self {
+            StartDir::Download => "download",
+            StartDir::Desktop => "desktop",
+            StartDir::Documents => "documenti",
+            StartDir::Home => "home",
+            StartDir::Custom => "personalizzato",
+        }
+    }
+    fn from_id(s: &str) -> Option<StartDir> {
+        StartDir::ALL.into_iter().find(|d| d.id() == s)
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct Settings {
+    dark: bool,
+    start: StartDir,
+    custom_path: String,
+    sort_key: SortKey,
+    ascending: bool,
+    folders_first: bool,
+    show_hidden: bool,
+    show_preview: bool,
+    confirm_trash: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            dark: true,
+            start: StartDir::Download,
+            custom_path: String::new(),
+            sort_key: SortKey::Saved,
+            ascending: false, // più recenti in alto
+            folders_first: false,
+            show_hidden: false,
+            show_preview: true,
+            confirm_trash: true,
+        }
+    }
+}
+
+impl Settings {
+    fn file() -> Option<PathBuf> {
+        Some(dirs::config_dir()?.join("Gestore File CP").join("impostazioni.ini"))
+    }
+
+    fn load() -> Self {
+        let mut s = Settings::default();
+        let Some(path) = Settings::file() else { return s };
+        let Ok(txt) = std::fs::read_to_string(path) else { return s };
+        for line in txt.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let (k, v) = (k.trim(), v.trim());
+            let b = v == "1";
+            match k {
+                "tema" => s.dark = v != "chiaro",
+                "cartella_iniziale" => {
+                    if let Some(d) = StartDir::from_id(v) {
+                        s.start = d;
+                    }
+                }
+                "percorso_personale" => s.custom_path = v.to_string(),
+                "ordina_per" => {
+                    if let Some(k) = SortKey::from_id(v) {
+                        s.sort_key = k;
+                    }
+                }
+                "crescente" => s.ascending = b,
+                "cartelle_prima" => s.folders_first = b,
+                "file_nascosti" => s.show_hidden = b,
+                "anteprima" => s.show_preview = b,
+                "conferma_cestino" => s.confirm_trash = b,
+                _ => {}
+            }
+        }
+        s
+    }
+
+    fn save(&self) {
+        let Some(path) = Settings::file() else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let b = |v: bool| if v { "1" } else { "0" };
+        let txt = format!(
+            "tema={}\ncartella_iniziale={}\npercorso_personale={}\nordina_per={}\ncrescente={}\ncartelle_prima={}\nfile_nascosti={}\nanteprima={}\nconferma_cestino={}\n",
+            if self.dark { "scuro" } else { "chiaro" },
+            self.start.id(),
+            self.custom_path,
+            self.sort_key.id(),
+            b(self.ascending),
+            b(self.folders_first),
+            b(self.show_hidden),
+            b(self.show_preview),
+            b(self.confirm_trash),
+        );
+        let _ = std::fs::write(path, txt);
+    }
+
+    fn start_path(&self) -> PathBuf {
+        let chosen = match self.start {
+            StartDir::Download => dirs::download_dir(),
+            StartDir::Desktop => dirs::desktop_dir(),
+            StartDir::Documents => dirs::document_dir(),
+            StartDir::Home => dirs::home_dir(),
+            StartDir::Custom => Some(PathBuf::from(self.custom_path.trim())).filter(|p| p.is_dir()),
+        };
+        chosen.or_else(dirs::download_dir).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Files,
+    Settings,
+    Info,
+}
+
 // ───────────────────────── Anteprima ─────────────────────────
 
 enum PreviewKind {
@@ -394,6 +552,13 @@ impl Tab {
             folders_first: false,
             selected: None,
         }
+    }
+
+    fn apply_defaults(&mut self, s: &Settings) {
+        self.sort_key = s.sort_key;
+        self.ascending = s.ascending;
+        self.folders_first = s.folders_first;
+        self.dirty = true;
     }
 
     fn title(&self) -> String {
@@ -533,14 +698,18 @@ struct App {
 
     places: Vec<(String, Color32, PathBuf)>,
     drives: Arc<Mutex<Vec<PathBuf>>>,
+
+    settings: Settings,
+    page: Page,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        apply_theme(&cc.egui_ctx, true);
+        let settings = Settings::load();
+        apply_theme(&cc.egui_ctx, settings.dark);
 
-        let start = dirs::download_dir().or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("."));
+        let start = settings.start_path();
 
         let mut places = Vec::new();
         let mut add = |n: &str, c: u32, p: Option<PathBuf>| {
@@ -584,10 +753,10 @@ impl App {
             next_tab_id: 2,
             tx,
             rx,
-            show_hidden: false,
-            show_preview: true,
-            dark: true,
-            pal: palette(true),
+            show_hidden: settings.show_hidden,
+            show_preview: settings.show_preview,
+            dark: settings.dark,
+            pal: palette(settings.dark),
             preview: None,
             rename: None,
             new_folder: None,
@@ -595,7 +764,11 @@ impl App {
             status: String::new(),
             places,
             drives,
+            settings,
+            page: Page::Files,
         };
+        let defaults = app.settings.clone();
+        app.tabs[0].apply_defaults(&defaults);
         let (tx, hidden) = (app.tx.clone(), app.show_hidden);
         app.tabs[0].load(&cc.egui_ctx, &tx, hidden);
         app
@@ -612,11 +785,14 @@ impl App {
 
     fn go(&mut self, ctx: &egui::Context, p: PathBuf) {
         let (tx, hidden) = (self.tx.clone(), self.show_hidden);
+        self.page = Page::Files;
         self.tab().go(ctx, &tx, hidden, p);
     }
 
     fn new_tab(&mut self, ctx: &egui::Context, p: PathBuf) {
         let mut t = Tab::new(self.next_tab_id, p);
+        t.apply_defaults(&self.settings);
+        self.page = Page::Files;
         self.next_tab_id += 1;
         let (tx, hidden) = (self.tx.clone(), self.show_hidden);
         t.load(ctx, &tx, hidden);
@@ -676,6 +852,43 @@ impl App {
         }
     }
 
+    /// Sposta nel cestino: con conferma oppure subito, secondo le impostazioni
+    fn request_delete(&mut self, ctx: &egui::Context, p: PathBuf) {
+        if self.settings.confirm_trash {
+            self.confirm_delete = Some(p);
+        } else {
+            match trash::delete(&p) {
+                Ok(_) => {
+                    self.status = "Spostato nel cestino".into();
+                    self.reload(ctx);
+                }
+                Err(e) => self.status = format!("Errore: {e}"),
+            }
+        }
+    }
+
+    /// Applica subito le nuove impostazioni e le salva su disco
+    fn apply_settings(&mut self, ctx: &egui::Context, s: Settings) {
+        if s.dark != self.settings.dark {
+            self.dark = s.dark;
+            self.pal = palette(s.dark);
+            apply_theme(ctx, s.dark);
+        }
+        self.show_preview = s.show_preview;
+        let hidden_changed = s.show_hidden != self.show_hidden;
+        self.show_hidden = s.show_hidden;
+        if s.sort_key != self.settings.sort_key || s.ascending != self.settings.ascending || s.folders_first != self.settings.folders_first {
+            for t in &mut self.tabs {
+                t.apply_defaults(&s);
+            }
+        }
+        s.save();
+        self.settings = s;
+        if hidden_changed {
+            self.reload(ctx);
+        }
+    }
+
     fn do_action(&mut self, ctx: &egui::Context, a: Action) {
         match a {
             Action::Open(p) => {
@@ -691,7 +904,7 @@ impl App {
                 let n = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 self.rename = Some((p, n));
             }
-            Action::Delete(p) => self.confirm_delete = Some(p),
+            Action::Delete(p) => self.request_delete(ctx, p),
             Action::CopyPath(p) => {
                 ctx.copy_text(p.display().to_string());
                 self.status = "Percorso copiato".into();
@@ -736,6 +949,7 @@ impl App {
         });
         if let Some(i) = switch {
             self.active = i;
+            self.page = Page::Files;
         }
         if let Some(i) = close {
             self.close_tab(i);
@@ -847,8 +1061,145 @@ impl App {
                 target = Some(p);
             }
         }
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(6.0);
+        if side_item(ui, pal, rgb(0x7E57C2), "⚙", "Impostazioni", self.page == Page::Settings) {
+            self.page = Page::Settings;
+        }
+        if side_item(ui, pal, rgb(0x1E88E5), "ℹ", "Info", self.page == Page::Info) {
+            self.page = Page::Info;
+        }
         if let Some(p) = target {
             self.go(ctx, p);
+        }
+    }
+
+    fn page_card(ui: &mut egui::Ui, pal: Pal, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+        egui::Frame::new().fill(pal.container).corner_radius(CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(title).strong().size(15.0).color(pal.primary));
+            ui.add_space(6.0);
+            add(ui);
+        });
+        ui.add_space(10.0);
+    }
+
+    fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let pal = self.pal;
+        let mut s = self.settings.clone();
+        let mut back = false;
+        let mut reset = false;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("⚙  Impostazioni").size(24.0).strong().color(pal.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("← Torna ai file").clicked() {
+                        back = true;
+                    }
+                });
+            });
+            ui.label(egui::RichText::new("Le modifiche si applicano subito e vengono salvate in automatico.").color(pal.weak));
+            ui.add_space(12.0);
+
+            App::page_card(ui, pal, "ASPETTO", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Tema:");
+                    ui.radio_value(&mut s.dark, true, "Scuro");
+                    ui.radio_value(&mut s.dark, false, "Chiaro");
+                });
+            });
+
+            App::page_card(ui, pal, "CARTELLA INIZIALE", |ui| {
+                ui.label("Cartella che si apre all'avvio e nelle nuove schede:");
+                egui::ComboBox::from_id_salt("start_dir").selected_text(s.start.label()).show_ui(ui, |ui| {
+                    for d in StartDir::ALL {
+                        ui.selectable_value(&mut s.start, d, d.label());
+                    }
+                });
+                if s.start == StartDir::Custom {
+                    ui.add_sized([ui.available_width().min(520.0), 30.0], egui::TextEdit::singleline(&mut s.custom_path).hint_text(r"Esempio: D:\Lavoro"));
+                    if !s.custom_path.trim().is_empty() && !Path::new(s.custom_path.trim()).is_dir() {
+                        ui.colored_label(rgb(0xE53935), "Cartella non trovata: verrà usata Download");
+                    }
+                }
+            });
+
+            App::page_card(ui, pal, "ORDINAMENTO PREDEFINITO", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Ordina per:");
+                    egui::ComboBox::from_id_salt("def_sort").selected_text(s.sort_key.label()).show_ui(ui, |ui| {
+                        for k in SortKey::ALL {
+                            ui.selectable_value(&mut s.sort_key, k, k.label());
+                        }
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut s.ascending, false, "Decrescente (più recenti e più grandi prima)");
+                });
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut s.ascending, true, "Crescente (A→Z, più vecchi prima)");
+                });
+                ui.checkbox(&mut s.folders_first, "Mostra le cartelle prima dei file");
+            });
+
+            App::page_card(ui, pal, "VISUALIZZAZIONE E SICUREZZA", |ui| {
+                ui.checkbox(&mut s.show_hidden, "Mostra i file nascosti");
+                ui.checkbox(&mut s.show_preview, "Mostra il pannello anteprima a destra");
+                ui.checkbox(&mut s.confirm_trash, "Chiedi conferma prima di spostare nel cestino");
+            });
+
+            ui.horizontal(|ui| {
+                if ui.button("↺ Ripristina impostazioni predefinite").clicked() {
+                    reset = true;
+                }
+            });
+            if let Some(f) = Settings::file() {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(format!("File delle impostazioni: {}", f.display())).small().color(pal.weak));
+            }
+        });
+        if reset {
+            s = Settings::default();
+        }
+        if s != self.settings {
+            self.apply_settings(ctx, s);
+        }
+        if back {
+            self.page = Page::Files;
+        }
+    }
+
+    fn info_page(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal;
+        let mut back = false;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("ℹ  Info").size(24.0).strong().color(pal.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("← Torna ai file").clicked() {
+                        back = true;
+                    }
+                });
+            });
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.add(egui::Image::from_bytes("bytes://gestore-file-icon.png", &include_bytes!("../assets/icon.png")[..]).fit_to_exact_size(Vec2::splat(104.0)));
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new(APP_NAME).size(30.0).strong().color(pal.text));
+                ui.label(egui::RichText::new(format!("Versione {APP_VERSION}")).size(15.0).color(pal.primary));
+                ui.add_space(18.0);
+                egui::Frame::new().fill(pal.primary_container).corner_radius(CornerRadius::same(20)).inner_margin(egui::Margin::symmetric(24, 16)).show(ui, |ui| {
+                    ui.label(egui::RichText::new("Questa app è stata creata da Peppe CP con l'aiuto della IA.").size(16.0).color(pal.text));
+                });
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new("Gestore file veloce e moderno, scritto in Rust.").color(pal.weak));
+            });
+        });
+        if back {
+            self.page = Page::Files;
         }
     }
 
@@ -1208,7 +1559,7 @@ impl App {
         }
         if let Some(p) = self.tabs[self.active].selected.clone() {
             if del {
-                self.confirm_delete = Some(p.clone());
+                self.request_delete(ctx, p.clone());
             }
             if f2 {
                 self.do_action(ctx, Action::Rename(p.clone()));
@@ -1252,6 +1603,9 @@ impl eframe::App for App {
                 t.rebuild_view();
             }
         }
+        if self.page != Page::Files && escape(ctx) {
+            self.page = Page::Files;
+        }
         self.shortcuts(ctx);
         self.sync_preview(ctx);
         let pal = self.pal;
@@ -1259,7 +1613,9 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").frame(egui::Frame::new().fill(pal.bg).inner_margin(egui::Margin::symmetric(12, 8))).show(ctx, |ui| {
             self.tab_bar(ui, ctx);
             ui.add_space(4.0);
-            self.toolbar(ui, ctx);
+            if self.page == Page::Files {
+                self.toolbar(ui, ctx);
+            }
         });
         egui::TopBottomPanel::bottom("status").frame(egui::Frame::new().fill(pal.bg).inner_margin(egui::Margin::symmetric(14, 6))).show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -1276,7 +1632,7 @@ impl eframe::App for App {
         egui::SidePanel::left("side").resizable(false).exact_width(200.0).frame(egui::Frame::new().fill(pal.bg).inner_margin(egui::Margin::symmetric(10, 4))).show(ctx, |ui| {
             self.sidebar(ui, ctx);
         });
-        if self.show_preview {
+        if self.show_preview && self.page == Page::Files {
             egui::SidePanel::right("preview")
                 .resizable(true)
                 .default_width(320.0)
@@ -1288,8 +1644,10 @@ impl eframe::App for App {
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(pal.surface).corner_radius(CornerRadius::same(24)).inner_margin(egui::Margin::symmetric(8, 8)))
-            .show(ctx, |ui| {
-                self.file_list(ui, ctx);
+            .show(ctx, |ui| match self.page {
+                Page::Files => self.file_list(ui, ctx),
+                Page::Settings => self.settings_page(ui, ctx),
+                Page::Info => self.info_page(ui),
             });
         self.dialogs(ctx);
     }

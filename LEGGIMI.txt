@@ -1,0 +1,17 @@
+GESTORE FILE CP - versione 1.0
+Creato da Peppe CP con l'aiuto della IA
+
+COME OTTENERE IL PROGRAMMA E L'INSTALLER
+Metodo 1 (consigliato, nessuna installazione sul PC):
+  1. Crea un repository su GitHub e caricaci dentro tutto il contenuto di questa cartella.
+  2. Apri la scheda "Actions": parte da sola la compilazione.
+  3. Alla fine scarica "Gestore-File-CP": dentro trovi
+       - Gestore File CP.exe              (programma, si usa anche senza installare)
+       - Installa Gestore File CP 1.0.exe (installer)
+
+Metodo 2 (sul tuo PC):
+  1. Installa Rust da https://rustup.rs
+  2. (Facoltativo, per l'installer) installa Inno Setup da https://jrsoftware.org/isdl.php
+  3. Doppio clic su compila.bat: i file escono nella cartella "dist".
+
+Le impostazioni si salvano in %APPDATA%\Gestore File CP\impostazioni.ini
